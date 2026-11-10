@@ -99,7 +99,7 @@ const I18N = {
     eta: "Finishes", res_cancelled: "Cancelled", res_error: "Stopped", res_complete: "Finished", layer: "Layer",
     filament: "Filament", speed: "Speed", u_day: "d",
     camera: "Camera", camera_alt: "Printer camera", temps: "Temperatures", nozzle: "Nozzle", bed: "Bed",
-    chamber: "Chamber", target: "Target {t} °C", cooling: "Cooling down", heater_off: "Off", heating: "heating {p} %",
+    chamber: "Chamber", target: "Target {t} °C", cooling: "Cooling down", heater_off: "Off", heating: "Heating {p} %",
     host: "Host", board: "Board", fan: "Fan",
     controls: "Controls", confirm_q: "Confirm?", click_again: "{label}: click again to confirm",
     power_on: "Turn on", power_on_title: "Turn the printer on", power_off: "Turn off", power_off_title: "Turn the printer off",
@@ -1260,9 +1260,11 @@ class PrintersOfficeCard extends HTMLElement {
       const s = this._st(id), v = this._num(id);
       if (!s || v === null) return null;
       const name = (s.attributes?.friendly_name || id).replace(new RegExp(`^${p.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*`, "i"), "");
-      const ink = inkOf(`${id} ${name}`);
+      // clé de traduction (anglaise, stable) d'abord : identifiant et nom suivent la langue du système (« schwarz_toner »)
+      const key = `${this._hass.entities?.[id]?.translation_key || ""} ${id} ${name}`;
+      const ink = inkOf(key);
       const lowAt = Number(s.attributes?.marker_low_level) || low;
-      const kind = /toner/i.test(`${id} ${name}`) ? "toner" : "ink";
+      const kind = /toner/i.test(key) ? "toner" : "ink";
       return { id, v: Math.max(0, Math.min(100, v)), color: ink.color, label: ink.label || name.replace(/_/g, " "), kind, low: v <= lowAt, empty: v <= 2 };
     }).filter(Boolean).sort((a, b) => {
       const byColor = INKS.findIndex(([, c]) => c === a.color) - INKS.findIndex(([, c]) => c === b.color);
@@ -1320,7 +1322,7 @@ class PrintersOfficeCard extends HTMLElement {
       const parts = c.show_parts !== false ? p.parts.map((id) => {
         const v = this._num(id);
         if (v === null) return "";
-        const name = `${id} ${this._st(id)?.attributes?.friendly_name || ""}`.toLowerCase();
+        const name = `${this._hass.entities?.[id]?.translation_key || ""} ${id} ${this._st(id)?.attributes?.friendly_name || ""}`.toLowerCase();
         const part = PARTS.find(([re]) => re.test(name));
         const [plabel, picon] = part ? [t(part[1]), part[2]] : [(this._st(id)?.attributes?.friendly_name || id).replace(p.name, "").trim(), "mdi:cog-outline"];
         const ink = inkOf(name);
