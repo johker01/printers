@@ -14,7 +14,79 @@
  */
 
 (() => {
-const CARD_VERSION = "0.5.0";
+const CARD_VERSION = "0.7.0";
+
+/** Patch the existing tree so sensor updates do not discard WebView scroll anchors,
+ * focused controls, or the live camera. No scrolling or focus restoration is needed. */
+function updateCard(root, html) {
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  const cameraSlot = (node) => node.nodeType === 1 &&
+    (node.classList.contains("pc-cam-slot") || node.classList.contains("pc-cam"));
+  const same = (a, b) => {
+    if (cameraSlot(a) && cameraSlot(b)) return true;
+    if (a.nodeType !== b.nodeType || a.nodeName !== b.nodeName) return false;
+    if (a.nodeType !== 1) return true;
+    // The first class identifies a component; subsequent classes describe its state.
+    return (a.localName === "ha-card" ||
+      (a.getAttribute("class") || "").split(/\s+/)[0] === (b.getAttribute("class") || "").split(/\s+/)[0]) &&
+      ["data-entity", "data-tab", "data-press", "data-power", "data-toggle"].every(
+        (key) => a.getAttribute(key) === b.getAttribute(key));
+  };
+  const patch = (parent, next) => {
+    let current = parent.firstChild;
+    for (const wanted of Array.from(next.childNodes)) {
+      let match = current;
+      while (match && !same(match, wanted)) match = match.nextSibling;
+      if (!match) {
+        parent.insertBefore(wanted, current);
+        continue;
+      }
+      // Remove obsolete siblings rather than detach/reinsert an existing anchor.
+      while (current !== match) {
+        const obsolete = current;
+        current = current.nextSibling;
+        obsolete.remove();
+      }
+      if (match.nodeType === 1) {
+        // _camMount owns this image, its URL, and retry handler.
+        if (!cameraSlot(wanted)) {
+          for (const attr of Array.from(match.attributes)) {
+            if (!wanted.hasAttribute(attr.name)) match.removeAttribute(attr.name);
+          }
+          for (const attr of Array.from(wanted.attributes)) {
+            if (match.getAttribute(attr.name) !== attr.value) match.setAttribute(attr.name, attr.value);
+          }
+          patch(match, wanted);
+        }
+      } else if (match.nodeValue !== wanted.nodeValue) match.nodeValue = wanted.nodeValue;
+      current = match.nextSibling;
+    }
+    while (current) {
+      const obsolete = current;
+      current = current.nextSibling;
+      obsolete.remove();
+    }
+  };
+  patch(root, template.content);
+}
+
+// Normalize each entity independently: number targets and sensors can use different units.
+function temperatureC(state) {
+  const raw = state?.state;
+  if (raw === undefined || raw === null || String(raw).trim() === "") return null;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return null;
+  switch (state.attributes?.unit_of_measurement) {
+    case "°F": return (value - 32) * 5 / 9;
+    case "K": return value - 273.15;
+    case "°C": return value;
+    // Legacy integrations sometimes omit units on known nozzle/bed entities.
+    case undefined: case null: case "": return value;
+    default: return null;
+  }
+}
+const displayTemperature = (value, unit) => unit === "fahrenheit" ? value * 9 / 5 + 32 : value;
 
 /* ------------------------------------------------------------- langues */
 
@@ -43,7 +115,7 @@ const I18N = {
     filament: "Filament", speed: "Vitesse", u_day: "j",
     // caméra et températures
     camera: "Caméra", camera_alt: "Caméra de l'imprimante", temps: "Températures", nozzle: "Buse", bed: "Plateau",
-    chamber: "Caisson", target: "Consigne {t} °C", cooling: "Refroidissement", heater_off: "Arrêt", heating: "chauffe {p} %",
+    chamber: "Caisson", target: "Consigne {t} {unit}", cooling: "Refroidissement", heater_off: "Arrêt", heating: "chauffe {p} %",
     host: "Hôte", board: "Carte", fan: "Ventilateur",
     // commandes
     controls: "Commandes", confirm_q: "Confirmer ?", click_again: "{label} : cliquez encore pour confirmer",
@@ -71,12 +143,12 @@ const I18N = {
     ed_icon: "Icône", ed_icon_color: "Couleur de l'icône", ed_printers: "Imprimantes affichées, dans cet ordre (vide = toutes)",
     ed_camera: "Caméra (vide = celle de l'imprimante)", ed_camera_mode: "Affichage de la caméra",
     ed_camera_refresh: "Rafraîchissement en mode image par image", ed_show_job: "Impression en cours", ed_show_camera: "Caméra",
-    ed_show_temps: "Températures", ed_show_controls: "Commandes (pause, reprise, annulation, arrêt d'urgence, lumières)",
+    ed_temperature_unit: "Unité de température", ed_show_temps: "Températures", ed_show_controls: "Commandes (pause, reprise, annulation, arrêt d'urgence, lumières)",
     ed_show_stats: "Statistiques", ed_show_device: "Appareil (adresse IP, micrologiciel, mises à jour)", ed_theme: "Couleurs de la carte",
     ed_low_level: "Alerte quand l'encre ou le toner descend sous", ed_show_supplies: "Encre et toner",
     ed_supplies_sort: "Ordre des cartouches", ed_show_parts: "Pièces d'usure (tambour, unité de fixation…)",
     ed_show_counters: "Compteurs de pages",
-    opt_live: "Vidéo en direct", opt_snapshot: "Image par image (moins de réseau)", opt_v2: "Style MyElectricalData (bleu nuit)",
+    opt_unit_auto: "Comme Home Assistant", opt_live: "Vidéo en direct", opt_snapshot: "Image par image (moins de réseau)", opt_v2: "Style MyElectricalData (bleu nuit)",
     opt_auto: "Style MyElectricalData, clair ou sombre selon Home Assistant", opt_ha: "Thème Home Assistant (clair ou sombre)",
     opt_sort_color: "Par couleur (noir, cyan, magenta, jaune)", opt_sort_level: "Par niveau, de la plus vide à la plus pleine",
     card_3d_name: "Carte Imprimantes 3D",
@@ -99,7 +171,7 @@ const I18N = {
     eta: "Finishes", res_cancelled: "Cancelled", res_error: "Stopped", res_complete: "Finished", layer: "Layer",
     filament: "Filament", speed: "Speed", u_day: "d",
     camera: "Camera", camera_alt: "Printer camera", temps: "Temperatures", nozzle: "Nozzle", bed: "Bed",
-    chamber: "Chamber", target: "Target {t} °C", cooling: "Cooling down", heater_off: "Off", heating: "Heating {p} %",
+    chamber: "Chamber", target: "Target {t} {unit}", cooling: "Cooling down", heater_off: "Off", heating: "Heating {p} %",
     host: "Host", board: "Board", fan: "Fan",
     controls: "Controls", confirm_q: "Confirm?", click_again: "{label}: click again to confirm",
     power_on: "Turn on", power_on_title: "Turn the printer on", power_off: "Turn off", power_off_title: "Turn the printer off",
@@ -122,12 +194,12 @@ const I18N = {
     ed_icon: "Icon", ed_icon_color: "Icon color", ed_printers: "Printers shown, in this order (empty = all)",
     ed_camera: "Camera (empty = the printer's own)", ed_camera_mode: "Camera display",
     ed_camera_refresh: "Refresh interval in snapshot mode", ed_show_job: "Current print", ed_show_camera: "Camera",
-    ed_show_temps: "Temperatures", ed_show_controls: "Controls (pause, resume, cancel, emergency stop, lights)",
+    ed_temperature_unit: "Temperature unit", ed_show_temps: "Temperatures", ed_show_controls: "Controls (pause, resume, cancel, emergency stop, lights)",
     ed_show_stats: "Statistics", ed_show_device: "Device (IP address, firmware, updates)", ed_theme: "Card colors",
     ed_low_level: "Warn when ink or toner drops below", ed_show_supplies: "Ink and toner",
     ed_supplies_sort: "Cartridge order", ed_show_parts: "Wear parts (drum, fuser…)",
     ed_show_counters: "Page counters",
-    opt_live: "Live video", opt_snapshot: "Snapshots (less network traffic)", opt_v2: "MyElectricalData style (midnight blue)",
+    opt_unit_auto: "Same as Home Assistant", opt_live: "Live video", opt_snapshot: "Snapshots (less network traffic)", opt_v2: "MyElectricalData style (midnight blue)",
     opt_auto: "MyElectricalData style, light or dark following Home Assistant", opt_ha: "Home Assistant theme (light or dark)",
     opt_sort_color: "By color (black, cyan, magenta, yellow)", opt_sort_level: "By level, emptiest first",
     card_3d_name: "3D printers card",
@@ -150,7 +222,7 @@ const I18N = {
     eta: "Fertig um", res_cancelled: "Abgebrochen", res_error: "Gestoppt", res_complete: "Fertig", layer: "Schicht",
     filament: "Filament", speed: "Geschwindigkeit", u_day: "T",
     camera: "Kamera", camera_alt: "Druckerkamera", temps: "Temperaturen", nozzle: "Düse", bed: "Druckbett",
-    chamber: "Bauraum", target: "Soll {t} °C", cooling: "Kühlt ab", heater_off: "Aus", heating: "Heizleistung {p} %",
+    chamber: "Bauraum", target: "Soll {t} {unit}", cooling: "Kühlt ab", heater_off: "Aus", heating: "Heizleistung {p} %",
     host: "Host", board: "Platine", fan: "Lüfter",
     controls: "Steuerung", confirm_q: "Bestätigen?", click_again: "{label}: zum Bestätigen erneut klicken",
     power_on: "Einschalten", power_on_title: "Drucker einschalten", power_off: "Ausschalten", power_off_title: "Drucker ausschalten",
@@ -173,12 +245,12 @@ const I18N = {
     ed_icon: "Symbol", ed_icon_color: "Symbolfarbe", ed_printers: "Angezeigte Drucker, in dieser Reihenfolge (leer = alle)",
     ed_camera: "Kamera (leer = die des Druckers)", ed_camera_mode: "Kameraanzeige",
     ed_camera_refresh: "Aktualisierung im Einzelbildmodus", ed_show_job: "Aktueller Druck", ed_show_camera: "Kamera",
-    ed_show_temps: "Temperaturen", ed_show_controls: "Steuerung (Pause, Fortsetzen, Abbrechen, Not-Aus, Licht)",
+    ed_temperature_unit: "Temperatureinheit", ed_show_temps: "Temperaturen", ed_show_controls: "Steuerung (Pause, Fortsetzen, Abbrechen, Not-Aus, Licht)",
     ed_show_stats: "Statistik", ed_show_device: "Gerät (IP-Adresse, Firmware, Updates)", ed_theme: "Kartenfarben",
     ed_low_level: "Warnen, wenn Tinte oder Toner unter diesen Wert fällt", ed_show_supplies: "Tinte und Toner",
     ed_supplies_sort: "Reihenfolge der Patronen", ed_show_parts: "Verschleißteile (Trommel, Fixiereinheit…)",
     ed_show_counters: "Seitenzähler",
-    opt_live: "Live-Video", opt_snapshot: "Einzelbilder (weniger Netzwerklast)", opt_v2: "MyElectricalData-Stil (Nachtblau)",
+    opt_unit_auto: "Wie Home Assistant", opt_live: "Live-Video", opt_snapshot: "Einzelbilder (weniger Netzwerklast)", opt_v2: "MyElectricalData-Stil (Nachtblau)",
     opt_auto: "MyElectricalData-Stil, hell oder dunkel wie Home Assistant", opt_ha: "Home-Assistant-Design (hell oder dunkel)",
     opt_sort_color: "Nach Farbe (Schwarz, Cyan, Magenta, Gelb)", opt_sort_level: "Nach Füllstand, leerste zuerst",
     card_3d_name: "3D-Drucker-Karte",
@@ -234,7 +306,13 @@ const parseHms = (v) => {
   return (Number(m[1] || 0) * 86400) + (Number(m[2] || 0) * 3600) + (Number(m[3] || 0) * 60) + Number(m[4] || 0);
 };
 // heure sur deux chiffres en 24 h (« 09:07 »), sans zéro en 12 h (« 9:07 PM »)
-const hm = (d) => d.toLocaleTimeString(LOCALE, { hour: "numeric", minute: "2-digit", hour12: HOUR12 });
+// heure sur deux chiffres en 24 h (« 06 h 40 » en français, « 06:40 » ailleurs), sans zéro en 12 h (« 6:40 AM »)
+const hm = (d) => {
+  const h12 = HOUR12 ?? new Intl.DateTimeFormat(LOCALE, { hour: "numeric" }).resolvedOptions().hour12;
+  // en français, à la française : « 06 h 35 »
+  if (LANG === "fr" && !h12) return `${String(d.getHours()).padStart(2, "0")} h ${String(d.getMinutes()).padStart(2, "0")}`;
+  return d.toLocaleTimeString(LOCALE, { hour: h12 ? "numeric" : "2-digit", minute: "2-digit", hour12: HOUR12 });
+};
 const when = (d) => (d.toDateString() === new Date().toDateString() ? hm(d)
   : `${d.toLocaleDateString(LOCALE, { weekday: "short", day: "numeric" })} ${hm(d)}`);
 
@@ -327,6 +405,7 @@ const DEFAULTS = {
   title: "",
   icon: "mdi:printer-3d",
   icon_color: "",
+  temperature_unit: "auto", // auto : l'unité de Home Assistant ; celsius ou fahrenheit pour l'imposer
   show_job: true, show_camera: true, show_temps: true, show_controls: true, show_stats: true, show_device: true,
   camera_mode: "live", // live : vidéo en continu ; snapshot : une image toutes les camera_refresh secondes
   camera_refresh: 5, // secondes
@@ -453,11 +532,16 @@ class PrintersCard extends HTMLElement {
 
   /** Place la caméra (élément gardé d'un rendu à l'autre) dans son emplacement. */
   _camMount(camId) {
-    const slot = this.shadowRoot.querySelector(".pc-cam-slot");
+    let slot = this.shadowRoot.querySelector(".pc-cam-slot, .pc-cam");
     if (!slot || !this.isConnected) { this._camStop(); return; }
     const mode = this._config.camera_mode === "snapshot" ? "snapshot" : "live";
     const key = `${camId}|${mode}`;
     if (this._camKey !== key) {
+      if (slot === this._camEl) {
+        const placeholder = document.createElement("div");
+        slot.replaceWith(placeholder);
+        slot = placeholder;
+      }
       this._camStop();
       const img = document.createElement("img");
       img.className = "pc-cam";
@@ -467,7 +551,7 @@ class PrintersCard extends HTMLElement {
       this._camEl = img; this._camKey = key; this._camId = camId; this._camMode = mode;
       this._camLoad();
     }
-    slot.replaceWith(this._camEl);
+    if (slot !== this._camEl) slot.replaceWith(this._camEl);
   }
 
   _refresh() {
@@ -670,7 +754,7 @@ class PrintersCard extends HTMLElement {
     const p = list.find((x) => x.id === this._tab || x.links?.includes(this._tab))
       || list.find((x) => ["printing", "paused", "error"].includes(this._status(x))) || list[0];
     const ids = list.flatMap((x) => [...Object.values(x.roles), ...x.outputs, ...x.others, this._power(x)].filter(Boolean));
-    const sig = `${LOCALE}|${c.theme}|${this._hass.themes?.darkMode}|${p?.id}|${this._armed}|${Math.floor(Date.now() / 30000)}|` + ids.map((id) => this._st(id)?.state ?? "-").join("|");
+    const sig = `${LOCALE}|${c.theme}|${this._hass.themes?.darkMode}|${p?.id}|${this._armed}|${Math.floor(Date.now() / 30000)}|` + ids.map((id) => `${this._st(id)?.state ?? "-"}:${this._st(id)?.attributes?.unit_of_measurement ?? ""}`).join("|");
     if (sig === this._sig) return;
     this._sig = sig;
 
@@ -770,25 +854,31 @@ class PrintersCard extends HTMLElement {
         ? `<div class="pc-sec"><div class="pc-h"><ha-icon icon="mdi:webcam"></ha-icon>${t("camera")}</div><div class="pc-camw" data-entity="${esc(camId)}">
             <div class="pc-cam-slot"></div></div></div>` : "";
 
-      // --- températures
+      // --- températures: use Celsius for thresholds/ratios, selected units only for display.
+      const temperature = (id) => temperatureC(this._st(id));
+      // auto (par défaut) : l'unité choisie dans Home Assistant ; celsius ou fahrenheit l'imposent
+      const tUnit = c.temperature_unit === "fahrenheit" || c.temperature_unit === "celsius" ? c.temperature_unit
+        : this._hass.config?.unit_system?.temperature === "°F" ? "fahrenheit" : "celsius";
+      const unit = tUnit === "fahrenheit" ? "°F" : "°C";
+      const shown = (value) => displayTemperature(value, tUnit);
       const temp = (cur, tgtNum, tgtSensor, power, icon, label) => {
-        const v = this._num(cur);
+        const v = temperature(cur);
         if (v === null) return "";
-        const tg = this._num(tgtNum) ?? this._num(tgtSensor);
+        const tg = temperature(tgtNum) ?? temperature(tgtSensor);
         const pw = this._num(power);
         const heating = tg !== null && tg > 0;
         const pct = heating ? Math.max(0, Math.min(100, (v / tg) * 100)) : 0;
         return `<div class="pc-t ${heating ? "hot" : ""}" data-entity="${esc(cur)}">
-          <div class="pc-tt"><span><ha-icon icon="${icon}"></ha-icon>${label}</span><b>${fmt(v, v < 100 ? 1 : 0)}<small> °C</small></b></div>
+          <div class="pc-tt"><span><ha-icon icon="${icon}"></ha-icon>${label}</span><b>${fmt(shown(v), shown(v) < 100 ? 1 : 0)}<small> ${unit}</small></b></div>
           <div class="pc-tbar"><i style="width:${pct}%"></i></div>
-          <div class="pc-tn">${heating ? t("target", { t: fmt(tg) }) : v >= 45 ? t("cooling") : t("heater_off")}${pw !== null && heating ? ` · ${t("heating", { p: fmt(pw) })}` : ""}</div></div>`;
+          <div class="pc-tn">${heating ? t("target", { t: fmt(shown(tg)), unit }) : v >= 45 ? t("cooling") : t("heater_off")}${pw !== null && heating ? ` · ${t("heating", { p: fmt(pw) })}` : ""}</div></div>`;
       };
-      const extra = p.others.filter((id) => this._st(id)?.attributes?.unit_of_measurement === "°C" && ![r.ext, r.bed, r.chamber].includes(id)).map((id) => {
-        const v = this._num(id);
+      const extra = p.others.filter((id) => ["°C", "°F", "K"].includes(this._st(id)?.attributes?.unit_of_measurement) && ![r.ext, r.bed, r.chamber].includes(id)).map((id) => {
+        const v = temperature(id);
         if (v === null) return "";
         const raw = id.split(".")[1].replace(/^.*?_(?=[a-z0-9]+_temp(erature)?$)/, "").replace(/_temp(erature)?$/, "");
         const label = /rockchip|host|rpi|raspberry|cb\d/i.test(raw) ? t("host") : /mcu|stm32|board|carte/i.test(raw) ? t("board") : raw.replace(/_/g, " ");
-        return `<span class="pc-x" data-entity="${esc(id)}"><ha-icon icon="mdi:thermometer"></ha-icon>${esc(label)} <b>${fmt(v, 0)} °C</b></span>`;
+        return `<span class="pc-x" data-entity="${esc(id)}"><ha-icon icon="mdi:thermometer"></ha-icon>${esc(label)} <b>${fmt(shown(v), 0)} ${unit}</b></span>`;
       }).filter(Boolean);
       const fan = this._num(r.fan);
       const temps = c.show_temps !== false ? [
@@ -846,11 +936,11 @@ class PrintersCard extends HTMLElement {
     }
 
     const alert = statuses.includes("error");
-    this.shadowRoot.innerHTML = `${STYLE}<ha-card class="${themeClass(c.theme, this._hass)} ${alert ? "pc-alert" : ""}">
+    updateCard(this.shadowRoot, `${STYLE}<ha-card class="${themeClass(c.theme, this._hass)} ${alert ? "pc-alert" : ""}">
       <header><div class="brand"><ha-icon class="pc-icon" icon="${esc(c.icon || "mdi:printer-3d")}" style="color:${esc(c.icon_color || "var(--med-accent, var(--med-blue))")}"></ha-icon>
         <div><div class="title">${esc(title)}</div><div class="sub">${esc(sub)}</div></div></div></header>
       ${body}
-    </ha-card>`;
+    </ha-card>`);
     if (camShown) this._camMount(camShown);
     else this._camStop();
   }
@@ -1011,6 +1101,10 @@ const SCHEMA = () => [
   { name: "camera_refresh", selector: { number: { min: 2, max: 60, mode: "box", unit_of_measurement: "s" } } },
   { name: "show_job", selector: { boolean: {} } },
   { name: "show_camera", selector: { boolean: {} } },
+  { name: "temperature_unit", selector: { select: { mode: "dropdown", options: [
+    { value: "auto", label: t("opt_unit_auto") },
+    { value: "celsius", label: "Celsius (°C)" },
+    { value: "fahrenheit", label: "Fahrenheit (°F)" }] } } },
   { name: "show_temps", selector: { boolean: {} } },
   { name: "show_controls", selector: { boolean: {} } },
   { name: "show_stats", selector: { boolean: {} } },
@@ -1355,11 +1449,11 @@ class PrintersOfficeCard extends HTMLElement {
     }
 
     const alert = infos.some((x) => x.st.cls === "bad");
-    this.shadowRoot.innerHTML = `${STYLE}${OFFICE_STYLE}<ha-card class="${themeClass(c.theme, this._hass)} ${alert ? "pc-alert" : ""}">
+    updateCard(this.shadowRoot, `${STYLE}${OFFICE_STYLE}<ha-card class="${themeClass(c.theme, this._hass)} ${alert ? "pc-alert" : ""}">
       <header><div class="brand"><ha-icon class="pc-icon" icon="${esc(c.icon || "mdi:printer")}" style="color:${esc(c.icon_color || "var(--med-accent, var(--med-blue))")}"></ha-icon>
         <div><div class="title">${esc(title)}</div><div class="sub">${esc(sub)}</div></div></div></header>
       ${body}
-    </ha-card>`;
+    </ha-card>`);
   }
 }
 

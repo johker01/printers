@@ -136,6 +136,7 @@ Un clic sur un élément ouvre la fiche de l'entité dans Home Assistant.
 | `camera_mode` | `live` (vidéo en direct) ou `snapshot` (image par image) | `live` |
 | `camera_refresh` | Rafraîchissement en mode `snapshot` (secondes, 2 au minimum) | `5` |
 | `show_job`, `show_camera`, `show_temps`, `show_controls`, `show_stats`, `show_device` | Afficher chaque partie | `true` |
+| `temperature_unit` | Unité des températures : `auto` (celle de Home Assistant), `celsius` ou `fahrenheit` | `auto` |
 | `theme` | `v2` (bleu nuit MyElectricalData), `auto` (clair ou sombre selon Home Assistant) ou `ha` (thème Home Assistant) | `v2` |
 
 Exemple avec deux imprimantes, un nom et une caméra choisis :
@@ -151,6 +152,12 @@ printers:
 ```
 
 L'éditeur visuel remplit `printers` pour vous : choisissez les appareils dans la liste.
+
+Chaque température (buse, plateau, caisson, consignes, capteurs de l'hôte ou
+de la carte) est convertie depuis l'unité de son entité (°C, °F ou K), puis
+affichée dans l'unité choisie. Une entité de buse, de plateau ou de caisson
+sans unité est lue en °C, comme avant. La carte ne change que l'affichage, pas
+les réglages des entités ni les commandes envoyées à l'imprimante.
 
 ## Carte Imprimantes de bureau — `custom:printers-office-card`
 
